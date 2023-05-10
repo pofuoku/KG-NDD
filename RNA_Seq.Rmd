@@ -1,0 +1,186 @@
+---
+title: "RNASeq"
+author: "Prince"
+date: "3/24/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message=F, warning = F)
+```
+
+### Introduction
+```{r}
+#BiocManager::install("DESeq2")
+
+```
+
+```{r}
+```
+
+
+### Get Count data
+The ff code chunk downloads the count data into the current working directory
+```{r}
+library("GEOquery")
+
+getGEOSuppFiles("GSE159699", makeDirectory = FALSE)
+```
+
+- the file is named `GSE159699_summary_count.star.txt.gz`
+```{r}
+count_data <- read.table(gzfile("GSE159699_summary_count.star.txt.gz"), header = TRUE, row.names = 1, sep = "\t")
+
+head(count_data,5)
+```
+- inspect data
+```{r}
+sample_names <- colnames(count_data)
+sample_names
+```
+- The names are descriptive. So a meta data can be created.
+- samples from young persons will dropped
+- samples from old persons will be use as control
+```{r}
+# Extract the conditions (AD or Old) from the sample names
+conditions <- gsub("^.*\\.(AD|Old)$", "\\1", sample_names)
+
+# Rename 'Old' to 'Control'
+conditions <- ifelse(conditions == "Old", "Control", conditions)
+
+# select only AD and Control conditions
+selected_samples <- sample_names[conditions %in% c("AD", "Control")]
+
+# Create a meta data frame
+meta_data <- data.frame(sample = selected_samples,
+                        condition = conditions[conditions %in% c("AD", "Control")])
+
+row.names(meta_data) <- meta_data$sample
+head(meta_data, 5)
+```
+
+```{r}
+table(meta_data$condition)
+```
+- We have 12 Disease vs 10 Control samples
+#### Match row names in `meta_data` to col names in `count_data`
+
+```{r}
+count_data <- count_data[, rownames(meta_data)]
+
+# sanity check
+all(rownames(meta_data) == colnames(count_data))
+```
+
+```{r}
+
+```
+
+### DESeq data set
+- create a DESeq object from above dataframes
+```{r}
+library("DESeq2")
+
+dds <- DESeqDataSetFromMatrix(countData = count_data,
+                              colData = meta_data,
+                              design = ~ condition)
+dds
+```
+### Differential expression analysis
+- `relevel()` sets **Control** as reference level
+- `DESeq()` performs all the analysis steps as described in the original DESeq2 paper (Love, Huber, and Anders 2014). Also see methods in my dissertation.
+- `results()` extracts all the necessary statistics and saved in `res`
+
+```{r}
+dds$condition <- relevel(dds$condition, ref = "Control")
+dds <- DESeq(dds)
+res <- results(dds)
+head(res, 5)
+```
+
+#### How many DEGs?
+- I tried various combinations for cut-offs in order to get as much DEGs as possible.
+```{r}
+alpha <- 0.05 # Adjusted p-value threshold
+log2FC <- 0  # log2 Fold Change threshold
+
+DEGs <- res[which(res$padj < alpha & abs(res$log2FoldChange) > log2FC),]
+nrow(DEGs)
+```
+```{r}
+DEGs
+```
+
+#### Visualise DEGs
+```{r}
+plotMA(res, alpha=0.05, 
+       main="MA Plot",
+       ylim=c(-3,3))
+```
+
+```{r}
+rna_seq_degs <- row.names(DEGs)
+length(rna_seq_degs)
+```
+
+```{r}
+rna_seq_degs[1:5]
+```
+
+### DEGs from previous studies
+A meta-analysis was conducted on six previous gene expression studies, which included 450 Alzheimer's disease (AD) and 212 healthy human brain tissue samples from the frontal cortex. The analysis identified 3124 differentially expressed genes (DEGs) after Bonferroni correction (Li, X. et al, 2015)<br><br>
+The file **srep12393-s2.xls** contains the list of DEGs from the study as provided by the authors (https://www.ncbi.nlm.nih.gov/pmc/articles/PMC4511863/bin/srep12393-s2.xls)
+.
+```{r}
+library(readxl)
+
+meta_degs <- read_excel("srep12393-s2.xls")
+head(meta_degs,5)
+```
+
+- inspect dataset
+```{r include=F, evaluate=F}
+# Check for missing values in all columns
+missing_values_per_column <- colSums(is.na(meta_degs))
+
+# Print the column names and the number of missing values in each column
+for (column_name in names(missing_values_per_column)) {
+  if (missing_values_per_column[column_name] > 0) {
+    cat(column_name, "has", missing_values_per_column[column_name], "missing values.\n")
+  } else {
+    cat(column_name, "has no missing values.\n")
+  }
+}
+
+```
+- Apparently, not all entrez ids have corresponding gene symbol. We have 141 missing.<br>
+
+#### Overlap between DEGs
+```{r}
+overlap <- intersect(rna_seq_degs, meta_degs$Symbol)
+length(overlap)
+```
+#### Venn Diagram for Overlap degs
+```{r}
+library(ggvenn)
+
+X <- list(A=rna_seq_degs, B=meta_degs$Symbol)
+ggvenn(X,show_percentage=FALSE)
+```
+
+
+
+```{r}
+overlap[1:10]
+```
+#### Write the common degs to a file
+```{r}
+writeLines(overlap, "DEGs_AD.txt") 
+```
+
+
+
+### Refrences
+- Li, X. et al. Integrated genomic approaches identify major pathways and upstream regulators in late onset Alzheimer's disease. Sci. Rep. 5, 12393; doi: 10.1038/srep12393 (2015).
+- Love, M.I., Huber, W., Anders, S. (2014) Moderated<br> estimation of fold change and dispersion for RNA-seq data with DESeq2. Genome Biology, 15:550. 10.1186/s13059-014-0550-8
+
